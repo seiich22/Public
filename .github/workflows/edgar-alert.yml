@@ -1,0 +1,65 @@
+# EDGAR 大口買い付けアラートを5分ごとに実行する
+# 既読の記録(edgar_seen.json)は "state" ブランチに保存して、次回に引き継ぐ。
+
+name: EDGAR alert
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # 5分ごと(GitHubの混雑時は遅れることがあります)
+  workflow_dispatch:         # 「Run workflow」ボタンで手動実行も可能
+    inputs:
+      test:
+        description: "テスト通知だけ送る"
+        type: boolean
+        default: false
+
+# 前の実行が終わる前に次が始まらないようにする
+concurrency:
+  group: edgar-alert
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # state ブランチへの保存に必要
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: テスト通知
+        if: github.event_name == 'workflow_dispatch' && inputs.test
+        run: python3 edgar_alert.py --test
+
+      - name: 既読の記録を読み込む
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.test) }}
+        run: |
+          if git fetch --depth=1 origin state 2>/dev/null; then
+            git show FETCH_HEAD:edgar_seen.json > edgar_seen.json
+            echo "既読 $(python3 -c 'import json;print(len(json.load(open("edgar_seen.json"))))') 件を読み込みました"
+          else
+            echo "記録なし(初回)"
+          fi
+
+      - name: 新着を確認
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.test) }}
+        run: python3 edgar_alert.py --once
+
+      - name: 既読の記録を保存
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.test) && hashFiles('edgar_seen.json') != '' }}
+        run: |
+          cp edgar_seen.json "$RUNNER_TEMP/seen.json"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # 履歴を残さない1コミットだけのブランチとして上書き保存する
+          git checkout -q --orphan state-tmp
+          git rm -rq --cached .
+          cp "$RUNNER_TEMP/seen.json" edgar_seen.json
+          git add edgar_seen.json
+          git commit -qm "update seen list"
+          git push -qf origin HEAD:state
