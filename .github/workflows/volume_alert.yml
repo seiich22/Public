@@ -3,6 +3,9 @@ on:
   schedule:
     - cron: "30 22 * * 1-5"   # UTC。米国市場の引け後(日本時間 朝7:30)に、月〜金で実行
   workflow_dispatch: {}
+permissions:
+  contents: write              # data/ の履歴CSVをコミットするため
+concurrency: volume-alert
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -14,3 +17,12 @@ jobs:
       - run: python3 volume_alert.py
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+      - name: 履歴CSVをコミット
+        run: |
+          git config user.name "volume-alert bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data
+          if git diff --cached --quiet; then echo "変更なし"; exit 0; fi
+          git commit -m "data: $(date -u +%F) の取得結果"
+          git pull --rebase -q origin "${GITHUB_REF_NAME}"
+          git push
